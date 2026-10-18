@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+<meta name="theme-color" content="#f4ecdf" />
+<title>资产簿 · 个人资产手账（单机版）</title>
+<link rel="stylesheet" href="./css/style.css?v=202610181130" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏡</text></svg>" />
+</head>
+<body>
+
+<!-- ==================== 主应用 ==================== -->
+<div class="shell" id="appShell" style="display:none">
+
+  <!-- 桌面侧边栏 -->
+  <aside class="sidebar">
+    <div class="sb-brand">
+      <div class="sb-ic">🏡</div>
+      <div>
+        <div class="sb-title">资产簿</div>
+        <div class="sb-sub">Asset Journal</div>
+      </div>
+    </div>
+    <nav id="sideNav"></nav>
+    <div class="sb-foot">
+      <div class="sb-user">
+        <div class="sb-avatar">🏡</div>
+        <div style="min-width:0">
+          <div style="font-size:13px;color:var(--text)">本机版</div>
+          <div class="sb-mail">数据存于本浏览器</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn ghost sm" onclick="App.go('settings')">设置</button>
+        <button class="btn ghost sm" onclick="App.exportJSON()">导出备份</button>
+      </div>
+      <div style="margin-top:10px">v2.0 · 静态单页版</div>
+    </div>
+  </aside>
+
+  <!-- 右侧主区 -->
+  <div class="main">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-ic">🏡</div>
+        <div>
+          <div class="title" id="pageTitle">概览</div>
+          <div class="sub" id="pageSub">A Personal Asset Journal</div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <div class="month" id="topMonth"></div>
+        <button class="menu-btn" onclick="App.quickMenu()" title="更多">☰</button>
+      </div>
+    </header>
+
+    <div class="content" id="content">
+      <div class="content-inner">
+
+        <!-- ---------- 概览 ---------- -->
+        <section class="section active" id="sec-overview">
+          <div class="grid-2 full-first">
+            <div>
+              <div class="hero" id="hero">
+                <img class="hero-bg" id="heroBg" alt="" />
+                <div class="hero-scrim"></div>
+                <div class="hero-body">
+                  <div class="label">净资产（<span id="ovMonthLabel">—</span>）</div>
+                  <div class="value" id="ovNet">¥0</div>
+                  <div class="stats">
+                    <div class="stat"><div class="n" id="ovAsset">¥0</div><div class="l">总资产</div></div>
+                    <div class="stat"><div class="n" id="ovLia">¥0</div><div class="l">总负债</div></div>
+                    <div class="stat"><div class="n" id="ovDiff">¥0</div><div class="l">较上月</div></div>
+                  </div>
+                </div>
+                <button class="cam-btn" onclick="App.pickHeaderBg()" title="更换背景图">📷</button>
+                <div class="hero-tip" id="bgTip" style="display:none"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">
+                  <span>各分类当前值</span>
+                  <span class="act" onclick="App.go('charts')">看图表 ›</span>
+                </div>
+                <div id="ovCatBars"></div>
+              </div>
+            </div>
+
+            <div>
+              <div class="card">
+                <div class="card-title">近 6 月净值趋势</div>
+                <canvas id="ovChart" height="180"></canvas>
+              </div>
+            </div>
+
+            <div>
+              <div class="card">
+                <div class="card-title">快捷入口</div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap">
+                  <button class="btn" style="flex:1" onclick="App.openForm()">＋ 记一笔</button>
+                  <button class="btn ghost" style="flex:1" onclick="App.go('charts')">看图表</button>
+                  <button class="btn ghost" style="flex:1" onclick="App.go('rank')">净值排位</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---------- 记录 ---------- -->
+        <section class="section" id="sec-records">
+          <div class="card">
+            <div class="month-pick">
+              <input type="month" id="recMonth" onchange="App.onRecMonth(this.value)" />
+              <button class="btn ghost" style="flex:0 0 auto;padding:8px 12px" onclick="App.openForm()">＋ 新增</button>
+            </div>
+            <div class="tabs wrap" id="recTabs"></div>
+            <div class="para fs-11_5 muted" style="margin:-2px 0 8px">
+              点击列表行打开该小类的<b>变动记录明细</b>（右侧「编辑 / 删除」按钮除外）。
+            </div>
+          </div>
+          <div id="recList"></div>
+        </section>
+
+        <!-- ---------- 图表 ---------- -->
+        <section class="section" id="sec-charts">
+          <div class="tabs" id="chartTabs"></div>
+
+          <div class="chart-pane active" id="pane-composition">
+            <div class="grid-2 full-first">
+              <div class="card">
+                <div class="card-title"><span>资产构成（<span id="chMonthLabel"></span>）</span></div>
+                <div class="month-pick">
+                  <input type="month" id="chMonth" onchange="App.onChMonth(this.value)" />
+                </div>
+                <canvas id="pieChart" height="220"></canvas>
+                <div class="legend" id="pieLegend"></div>
+                <div class="divider"></div>
+                <div class="diff-stats" style="margin-bottom:6px">
+                  <div class="stat"><div class="n" id="cAsset">¥0</div><div class="l">总资产</div></div>
+                  <div class="stat"><div class="n" id="cLia">¥0</div><div class="l">总负债</div></div>
+                  <div class="stat"><div class="n" id="cNet">¥0</div><div class="l">净资产</div></div>
+                </div>
+                <div id="bars"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">净值变化曲线（全部月份）</div>
+                <canvas id="trendChart" height="240"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <div class="chart-pane" id="pane-change">
+            <div class="grid-2">
+              <div class="card">
+                <div class="card-title">净资产变化（<span id="diffRangeLabel"></span>）</div>
+                <div class="month-pick">
+                  <input type="month" id="diffMonthA" onchange="App.onDiffA(this.value)" />
+                  <button class="btn ghost" style="flex:0 0 auto;padding:8px 12px" onclick="App.swapDiff()" title="交换两个月">⇄</button>
+                  <input type="month" id="diffMonthB" onchange="App.onDiffB(this.value)" />
+                </div>
+                <div class="para fs-11_5" style="margin:-4px 0 10px">左侧为起始月，右侧为结束月，变化 = 结束月 − 起始月。可任选两个月对比，点 ⇄ 交换。</div>
+                <div class="diff-hero">
+                  <div class="big" id="diffNet">--</div>
+                  <div class="sub" id="diffRate">--</div>
+                </div>
+                <div class="diff-stats">
+                  <div class="stat"><div class="n" id="diffPrev">¥0</div><div class="l">起始月净资产</div></div>
+                  <div class="stat"><div class="n" id="diffCur">¥0</div><div class="l">结束月净资产</div></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">各分类增减</div>
+                <canvas id="diffChart" height="200"></canvas>
+                <div class="legend">
+                  <div class="li"><div class="d" style="background:#a63d2f"></div>增加</div>
+                  <div class="li"><div class="d" style="background:#7a8450"></div>减少</div>
+                </div>
+                <div class="divider"></div>
+                <div class="card-title" style="margin-bottom:4px">分类明细对比</div>
+                <div id="diffList"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---------- 排位 ---------- -->
+        <section class="section" id="sec-rank">
+          <div class="grid-2">
+            <div class="card">
+              <div class="rk-src">
+                <span class="rk-badge" id="rkBadge">内置基准</span>
+                <span class="fs-11_5 muted" id="rkSource">数据来源：内置示例分位基准</span>
+              </div>
+              <div class="rank-num" id="rkNum">--%</div>
+              <div class="rank-desc" id="rkDesc">超过全国约 --% 的人群（净资产口径）</div>
+              <div class="disclaimer" id="rkDisc"></div>
+            </div>
+            <div>
+              <div class="card">
+                <div class="card-title">
+                  <span>你的净资产</span>
+                  <span class="act" onclick="App.renderRank()">刷新</span>
+                </div>
+                <div class="month-pick">
+                  <input type="month" id="rkMonth" onchange="App.onRkMonth(this.value)" />
+                </div>
+                <div class="row"><span class="k">净资产</span><span class="v" id="rkNet" style="font-family:var(--serif);font-weight:700">¥0</span></div>
+                <div class="row"><span class="k">总资产</span><span class="v" id="rkAsset">¥0</span></div>
+                <div class="row"><span class="k">总负债</span><span class="v" id="rkLia">¥0</span></div>
+              </div>
+              <div class="card">
+                <div class="card-title">数据口径说明</div>
+                <div class="para fs-11_5">· 净资产 = 现金 + 固定资产 + 投资 + 保险 + 债权 − 负债，取所选月份的累计值。</div>
+                <div class="para fs-11_5">· 分位由内置示例基准线性插值估算，非权威统计，仅供娱乐参考。</div>
+                <div class="para fs-11_5">· 静态版不联网，不使用任何外部 AI 服务，数据不会离开本机。</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ---------- 规划 ---------- -->
+        <section class="section" id="sec-plan">
+          <div class="card">
+            <div class="card-title">
+              <span>配置方案</span>
+              <span class="act" onclick="App.openPlanMgr()">管理 ›</span>
+            </div>
+            <div class="tabs wrap" id="planTabs"></div>
+            <div class="para fs-11_5" id="planDesc" style="margin-top:8px"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <div class="card-title"><span>规划占比（<span id="planMonthLabel"></span>）</span></div>
+              <div class="month-pick">
+                <input type="month" id="planMonth" onchange="App.onPlanMonth(this.value)" />
+              </div>
+              <div class="field" style="margin-bottom:10px">
+                <label>金额基数</label>
+                <div class="seg" id="planBaseSeg">
+                  <div class="opt" data-v="assets">总资产</div>
+                  <div class="opt" data-v="net">净资产</div>
+                </div>
+              </div>
+              <div class="plan-base">
+                <span class="lb">可配置基数</span>
+                <span class="vl" id="planBaseVal">¥0</span>
+              </div>
+              <canvas id="planPie" height="220"></canvas>
+              <div class="legend" id="planLegend"></div>
+            </div>
+
+            <div>
+              <div class="card">
+                <div class="card-title">规划 vs 实际</div>
+                <canvas id="planBars" height="220"></canvas>
+                <div class="legend">
+                  <div class="li"><div class="d" style="background:#e0d0b4"></div>规划目标</div>
+                  <div class="li"><div class="d" style="background:#9d4238"></div>实际持有</div>
+                </div>
+                <div class="divider"></div>
+                <div id="planRows"></div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">配置提示</div>
+                <div id="planTips"></div>
+                <div class="disclaimer" style="margin-top:12px">
+                  以上提示由「规划占比 vs 实际占比」的数据对比自动生成，仅用于提示配置偏差，<b>不构成任何投资或理财建议</b>。
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+        <!-- ---------- 设置 ---------- -->
+        <section class="section" id="sec-settings">
+          <div class="grid-2">
+            <div>
+              <div class="card">
+                <div class="card-title">显示</div>
+                <div class="field">
+                  <label>字体大小（全局缩放，立即生效）</label>
+                  <div class="seg" id="fsSeg">
+                    <div class="opt" data-fs="0.9">小</div>
+                    <div class="opt" data-fs="1">标准</div>
+                    <div class="opt" data-fs="1.1">较大</div>
+                    <div class="opt" data-fs="1.2">大</div>
+                    <div class="opt" data-fs="1.35">特大</div>
+                  </div>
+                </div>
+                <div class="para" style="margin:8px 0 0">· 按同一比例放大/缩小全站所有文字（含按钮、图表说明与弹窗），设置保存在本浏览器，换设备不会自动同步。</div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">数据管理</div>
+                <div class="row"><span class="k">分类管理</span><span class="v"><button class="btn sm" onclick="App.openCatMgr()">管理</button></span></div>
+                <div class="row"><span class="k">资产配置方案</span><span class="v"><button class="btn sm" onclick="App.openPlanMgr()">管理</button></span></div>
+                <div class="row"><span class="k">导出 CSV</span><span class="v"><button class="btn sm" onclick="App.exportCSV()">导出</button></span></div>
+                <div class="row"><span class="k">导出 JSON 备份</span><span class="v"><button class="btn sm" onclick="App.exportJSON()">导出</button></span></div>
+                <div class="row"><span class="k">导入 JSON 还原</span><span class="v"><button class="btn sm ghost" onclick="App.importJSON()">导入</button></span></div>
+                <div class="row"><span class="k">概览背景图 <span id="bgStatus" class="fs-12 muted"></span></span><span class="v"><button class="btn sm" onclick="App.pickHeaderBg()">更换</button><button class="btn sm ghost" onclick="App.clearHeaderBg()">清除</button></span></div>
+                <div class="row"><span class="k">恢复示例数据</span><span class="v"><button class="btn sm ghost" onclick="App.restoreDemo()">恢复</button></span></div>
+                <div class="row" style="border-bottom:none"><span class="k">清空数据 <span class="fs-12 muted">（可勾选范围）</span></span><span class="v"><button class="btn sm danger" onclick="App.openClear()">清空</button></span></div>
+              </div>
+            </div>
+
+            <div>
+              <div class="card">
+                <div class="card-title">关于资产簿</div>
+                <div class="para">一款帮你记录现金、固定资产、投资与负债，按月存档、用图表展示变化、按配置方案对照目标并估算净值排位的个人资产管理工具。</div>
+                <div class="para">· 这是<b>静态单页版</b>：不用注册登录、不联网，双击 index.html 也能直接记账；数据存于<b>本浏览器 localStorage</b>，不上传任何服务器。</div>
+                <div class="para">· 换设备或换浏览器时，用「导出 JSON 备份 → 导入」搬运；<b>清理浏览器数据会一并清除账本</b>，建议定期导出。</div>
+                <div class="para">· 净值 = 现金 + 固定资产 + 投资 + 保险 + 债权 − 负债。</div>
+                <div class="para collapsed">· 采用<b>三级结构</b><span class="help-q" onclick="this.parentNode.classList.toggle('collapsed')">?</span><span class="help-body">：一级分类（可自定义）→ 二级小类（如「建行活期」「自住房产」，同名可有多处）→ 变动记录（记录每月增减）。小类当前值 = 变动记录累计和，再汇总到一级分类供图表与规划使用</span></div>
+                <div class="para">· 投资类支持填写本金，自动按当前市值计算回报。</div>
+                <div class="para">· 规划页内置标普家庭资产象限、4321 法则及保守/平衡/激进分型等国际通用配置参考，可自由增删改方案，并与实际资产做对比。</div>
+                <div class="para">· 金额按变动记录逐条累加，界面与备份文件一律以「元」呈现。</div>
+              </div>
+
+              <div class="card">
+                <div class="card-title">备份说明</div>
+                <div class="para">· <b>JSON</b> 是完整备份：含全部二级小类与变动记录、自定义分类、配置方案、概览背景图与字号设置，用于换设备/换浏览器时完整还原，<b>也兼容原版 v1.19 导出的备份文件</b>。</div>
+                <div class="para">· <b>CSV</b> 仅含记录明细（月份/一级分类/二级小类/变动金额/备注），适合用 Excel 查看，不能用于还原。</div>
+                <div class="para">· 导入为<b>覆盖式</b>：会替换当前浏览器里的全部业务数据，操作前会二次确认。</div>
+                <div class="para">· 备份文件的金额单位为「元」，与界面显示一致，可直接用文本编辑器查看。</div>
+              </div>
+
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- 手机底部 Tab -->
+  <nav class="tabbar" id="tabbar"></nav>
+  <button class="fab" id="fabAdd" onclick="App.openForm()" title="新增二级小类" style="display:none">＋</button>
+</div>
+
+<!-- ==================== 弹层 ==================== -->
+<!-- 新增/编辑 二级小类 -->
+<div class="mask" id="mask">
+  <div class="sheet">
+    <h3><span id="formTitle">新增二级小类</span><span class="x" onclick="App.closeForm()">×</span></h3>
+    <div class="field">
+      <label>类别</label>
+      <div class="seg" id="catSeg"></div>
+    </div>
+    <div class="field">
+      <label>名称</label>
+      <input type="text" id="fName" placeholder="如：招商银行储蓄卡 / 自住房产" maxlength="24" />
+      <div class="para fs-11_5" id="nameHint" style="margin:6px 0 0"></div>
+    </div>
+    <div class="field" id="initField">
+      <label><span id="initLabelTxt">初始金额（元）</span></label>
+      <input type="number" id="fAmount" placeholder="0" inputmode="decimal" step="0.01" oninput="App.onFormAmtInput()" />
+    </div>
+    <div class="field" id="principalField" style="display:none">
+      <label>投资本金（元）<span class="fs-12 muted">（投入的成本）</span></label>
+      <input type="number" id="fPrincipal" placeholder="0" inputmode="decimal" step="0.01" />
+      <div class="para fs-11_5" style="margin:6px 0 0">本金 = 你实际投入的成本，只用于计算收益率；上面的初始金额 = 建档当月的市值，之后市值随变动记录累计。两者一个是「值多少」、一个是「花多少」，不是同一回事。</div>
+    </div>
+    <div class="field" id="fMonthField">
+      <label>归属月份</label>
+      <input type="month" id="fMonth" />
+    </div>
+    <div class="field" id="curValField" style="display:none">
+      <label>当前值（截至 <span id="curValMonth"></span>，由变动记录累计得出）</label>
+      <input type="text" id="fCurVal" disabled />
+      <div class="para fs-11_5" style="margin:6px 0 0">改上面的「初始金额」会自动重算当前值；日常增减请到列表行的「明细」里添加变动记录。</div>
+    </div>
+    <div class="field">
+      <label>备注</label>
+      <input type="text" id="fNote" placeholder="可选" maxlength="30" />
+    </div>
+    <div class="actions">
+      <button class="btn ghost" onclick="App.closeForm()">取消</button>
+      <button class="btn primary" onclick="App.saveForm()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 变动记录明细 -->
+<div class="mask" id="entryMask">
+  <div class="sheet">
+    <h3><span id="entTitle">变动记录</span><span class="x" onclick="App.closeEntries()">×</span></h3>
+    <div class="para fs-11_5" id="entSub"></div>
+    <div class="ent-form">
+      <div class="ent-row">
+        <div class="seg" id="entSignSeg">
+          <div class="opt active" data-v="1" onclick="App.setEntSign(1)">增加</div>
+          <div class="opt" data-v="-1" onclick="App.setEntSign(-1)">减少</div>
+        </div>
+        <input type="number" id="entAmt" placeholder="金额" inputmode="decimal" step="0.01" oninput="App.onEntAmtInput(this.value)" />
+        <input type="month" id="entMonth" />
+      </div>
+      <div class="ent-row">
+        <input type="text" id="entNote" class="ent-note" placeholder="备注（如：工资 / 月供 / 定投）" maxlength="30" />
+        <button class="btn primary" id="entSave" onclick="App.saveEntry()">添加</button>
+        <button class="btn ghost" id="entCancelEdit" style="display:none" onclick="App.cancelEntryEdit()">取消</button>
+      </div>
+    </div>
+    <div class="para fs-11_5" style="margin-top:8px">小类的当前值 = 截止所选月份全部变动记录的累计和，因此往前/往后的月份会自动结转。</div>
+    <div class="divider"></div>
+    <div id="entList"></div>
+    <div class="actions">
+      <button class="btn ghost" onclick="App.closeEntries()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 分类管理 -->
+<div class="mask" id="catMask">
+  <div class="sheet">
+    <h3><span>分类管理</span><span class="x" onclick="App.closeCatMgr()">×</span></h3>
+    <div id="catList"></div>
+    <div class="divider"></div>
+    <div id="catEditor" style="display:none">
+      <div class="field">
+        <label>名称</label>
+        <input type="text" id="catName" placeholder="如：数字货币 / 公积金 / 应收账款" maxlength="10" />
+      </div>
+      <div class="field">
+        <label>颜色（点色块自由选择）</label>
+        <div class="cc-row">
+          <input type="color" id="catColor" oninput="App.onCatColor(this.value)" />
+          <span class="cc-hex" id="catColorHex"></span>
+          <div class="cc-quick" id="catColorQuick"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label>类型</label>
+        <div class="seg" id="catKindSeg">
+          <div class="opt active" data-k="asset" onclick="App.setCatKind('asset')">资产</div>
+          <div class="opt" data-k="liability" onclick="App.setCatKind('liability')">负债</div>
+        </div>
+      </div>
+      <div class="field" id="catPrincipalField">
+        <label>记录本金与回报</label>
+        <div class="seg" id="catPrincipalSeg">
+          <div class="opt active" data-v="0" onclick="App.setCatPrincipal(0)">不记录</div>
+          <div class="opt" data-v="1" onclick="App.setCatPrincipal(1)">记录</div>
+        </div>
+      </div>
+      <div class="dlg-err" id="catErr"></div>
+      <div class="actions">
+        <button class="btn ghost" onclick="App.closeCatEditor()">取消</button>
+        <button class="btn primary" onclick="App.saveCatEditor()">保存</button>
+      </div>
+    </div>
+    <button class="btn primary block" style="margin-top:4px" onclick="App.openCatEditor()">＋ 新增分类</button>
+  </div>
+</div>
+
+<!-- 方案管理 -->
+<div class="mask" id="planMask">
+  <div class="sheet">
+    <h3><span>配置方案管理</span><span class="x" onclick="App.closePlanMgr()">×</span></h3>
+    <div class="para fs-11_5 collapsed">
+      每个项目可<b>关联多个</b>资产分类（点选标签，可多选）<span class="help-q" onclick="this.parentNode.classList.toggle('collapsed')">?</span><span class="help-body">；同一分类下只想算某几笔时，用<b>细选小类</b>精确指定。关联后才能把「规划目标」与「实际持有」做对比。占比合计建议为 100%</span>
+    </div>
+    <div id="planMgrList"></div>
+    <div class="divider"></div>
+    <div id="planEditor" style="display:none">
+      <div class="field">
+        <label>方案名称</label>
+        <input type="text" id="planName" maxlength="16" placeholder="如：稳健型配置" />
+      </div>
+      <div class="field">
+        <label>方案说明（可选）</label>
+        <input type="text" id="planDescIn" maxlength="40" placeholder="如：偏防守，先留足应急金" />
+      </div>
+      <div class="field">
+        <label>配置项目（占比合计 <span id="planRatioSum">0</span>%）</label>
+        <div id="planItems"></div>
+        <button class="btn ghost block" style="margin-top:8px" onclick="App.addPlanItem()">＋ 新增项目</button>
+      </div>
+      <div id="planDupHint"></div>
+      <div class="dlg-err" id="planErr"></div>
+      <div class="actions">
+        <button class="btn ghost" onclick="App.closePlanEditor()">取消</button>
+        <button class="btn primary" onclick="App.savePlanEditor()">保存</button>
+      </div>
+    </div>
+    <button class="btn primary block" style="margin-top:4px" onclick="App.openPlanEditor()">＋ 新建方案</button>
+  </div>
+</div>
+
+<!-- 清空数据 -->
+<div class="mask" id="clearMask">
+  <div class="sheet">
+    <h3><span>清空数据</span><span class="x" onclick="App.closeClear()">×</span></h3>
+    <div class="warn-box">⚠️ 清空后<b>无法恢复</b>。建议先导出一份 JSON 备份，再继续操作。</div>
+    <div class="field">
+      <label>清除范围（可多选，至少一项）</label>
+      <div class="chk-list">
+        <label class="chk-row"><input type="checkbox" id="clrAssets" checked onchange="App.clearFormSync()" /><span class="chk-name">资产记录</span><span class="chk-extra" id="clrAssetsInfo"></span></label>
+        <label class="chk-row"><input type="checkbox" id="clrBg" checked onchange="App.clearFormSync()" /><span class="chk-name">概览背景图</span><span class="chk-extra">自定义封面</span></label>
+        <label class="chk-row"><input type="checkbox" id="clrCats" onchange="App.clearFormSync()" /><span class="chk-name">自定义分类</span><span class="chk-extra">恢复默认六类</span></label>
+        <label class="chk-row"><input type="checkbox" id="clrPlans" onchange="App.clearFormSync()" /><span class="chk-name">配置方案</span><span class="chk-extra">恢复默认方案</span></label>
+      </div>
+      <div class="para fs-11_5" style="margin-top:8px">勾选「自定义分类」会一并删除该分类下的记录，分类将恢复为默认六类。</div>
+    </div>
+    <div class="field">
+      <label>确认短语：请输入「清空」两个字以继续</label>
+      <input type="text" id="clrWord" placeholder="清空" autocomplete="off" oninput="App.clearFormSync()" />
+    </div>
+    <label class="chk-line">
+      <input type="checkbox" id="clrBackedUp" onchange="App.clearFormSync()" />
+      <span>我已备份：确认已导出并妥善保存了 JSON 备份文件，自愿承担清空后无法恢复的后果。</span>
+    </label>
+    <div class="dlg-err" id="clrErr"></div>
+    <div class="actions">
+      <button class="btn ghost" onclick="App.closeClear()">取消</button>
+      <button class="btn danger" id="clrConfirm" disabled onclick="App.doClear()">确认清空</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用对话框 -->
+<div class="mask" id="dlgMask">
+  <div class="sheet" style="max-width:440px">
+    <h3 id="dlgTitle">提示</h3>
+    <div class="dlg-body">
+      <div class="dlg-msg" id="dlgMsg"></div>
+      <div class="field dlg-field" id="dlgField" style="display:none">
+        <label id="dlgLabel">请输入</label>
+        <input type="text" id="dlgInput" autocomplete="off" />
+      </div>
+      <div class="dlg-err" id="dlgErr"></div>
+    </div>
+    <div class="actions">
+      <button class="btn ghost" id="dlgCancel">取消</button>
+      <button class="btn primary" id="dlgOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-host" id="toastHost"></div>
+<div class="loading" id="loading"><div class="spinner"></div></div>
+<input type="file" id="hiddenFile" style="display:none" />
+
+<script src="./js/api.js?v=202610181130"></script>
+<script src="./js/charts.js?v=202610181130"></script>
+<script src="./js/ui.js?v=202610181130"></script>
+<script src="./js/app.js?v=202610181130"></script>
+</body>
+</html>

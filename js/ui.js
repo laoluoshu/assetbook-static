@@ -37,6 +37,23 @@ const Fmt = {
   },
   esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  },
+  /**
+   * 内联事件里传字符串专用。
+   * 不能用 esc()：esc 把 ' 转成 &#39;，浏览器先解 HTML 实体再交给 JS 引擎，
+   * 字符串还是会被提前闭合，反而制造了注入点。这里改用 JS 的 Unicode 转义，
+   * 里面不含 & 不会被 HTML 提前解码。
+   */
+  jsStr(s) {
+    return String(s == null ? '' : s)
+      .replace(/\\/g, '\\u005C')
+      .replace(/'/g, '\\u0027')
+      .replace(/"/g, '\\u0022')
+      .replace(/</g, '\\u003C')
+      .replace(/>/g, '\\u003E')
+      .replace(/&/g, '\\u0026')
+      .replace(/`/g, '\\u0060')
+      .replace(/[\r\n]/g, ' ');
   }
 };
 

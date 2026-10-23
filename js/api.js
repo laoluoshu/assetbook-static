@@ -117,9 +117,39 @@ function recentMonths(n, from) {
 }
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
+/** 月份合法性：格式 + 真实存在的月份（正则挡不住 13 月这种） */
+function isValidMonth(m) {
+  const s = String(m == null ? '' : m).trim();
+  if (!MONTH_RE.test(s)) return false;
+  const mo = parseInt(s.slice(5, 7), 10);
+  return mo >= 1 && mo <= 12;
+}
 function monthOf(v, fallback) {
   const s = String(v || '').trim();
-  return MONTH_RE.test(s) ? s : fallback;
+  return isValidMonth(s) ? s : fallback;
+}
+
+/* 分类 key 会拼进 HTML 属性、内联事件和导出文件，统一限制成安全字符集。
+   挡掉引号/尖括号/空白等，避免任何一处拼接出可执行代码 */
+const KEY_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function normKey(k, fallback) {
+  const s = String(k || '').trim();
+  return KEY_RE.test(s) ? s : fallback;
+}
+
+/* 名称类文本长度上限：超出部分直接截断，避免撑爆 localStorage 与界面 */
+const NAME_MAX = 60;
+function normName(v, fallback) {
+  const s = String(v == null ? '' : v).trim();
+  if (!s) return fallback || '';
+  return s.length > NAME_MAX ? s.slice(0, NAME_MAX) : s;
+}
+
+/* 背景图只允许 data:image/*，防止把外站地址或 javascript: 塞进来 */
+function normHeaderBg(v) {
+  const s = String(v || '');
+  if (!s) return '';
+  return /^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/=\s]+$/i.test(s) ? s : '';
 }
 
 function normColor(c) {
@@ -141,7 +171,11 @@ function num(v) {
 const Store = {
   db: null,
 
-  /** 读：没有就播种一份全新的；解析失败则重建，避免页面白屏 */
+  /**
+   * 读：没有就播种一份全新的；解析失败则先备份再重建，避免页面白屏。
+   * 坏数据不能直接丢——用户可能存了半年的账，静默重建等于数据蒸发，
+   * 所以先把原始内容另存一份到 *_corrupt 键，出问题还能手工捞回来。
+   */
   load() {
     let raw = null;
     try { raw = localStorage.getItem(LS_KEY); } catch (e) { raw = null; }
@@ -153,12 +187,91 @@ const Store = {
           && Array.isArray(parsed.entries) && Array.isArray(parsed.plans)) {
           this.db = parsed;
           this.db.settings = this.db.settings || { fontScale: 1, headerBg: '' };
+          this.repair();
           return;
         }
-      } catch (e) { /* 数据损坏，落到下面重建 */ }
+        throw new Error('结构不完整');
+      } catch (e) {
+        // 数据损坏：备份原文件再重建
+        try { localStorage.setItem(LS_KEY + '_corrupt_' + Date.now(), raw); } catch (e2) { /* 备份不了就算了 */ }
+        console.warn('[资产簿] 本地数据损坏，已备份并重建：', e);
+      }
     }
     this.db = this.seed();
     this.save();
+  },
+
+  /**
+   * 修补历史数据里的结构问题：缺失的 seq、越界的小类引用、非法月份。
+   * 只做「补齐 / 剔除明显无效」，不静默改用户的金额与名称。
+   */
+  repair() {
+    const db = this.db;
+    db.settings = db.settings || { fontScale: 1, headerBg: '' };
+    db.settings.fontScale = num(db.settings.fontScale) || 1;
+    db.settings.headerBg = normHeaderBg(db.settings.headerBg);
+
+    // seq 缺失或与实际 id 冲突时，按现有最大 id 重算，避免新记录覆盖老记录
+    const maxOf = (arr) => arr.reduce((a, x) => Math.max(a, Number(x.id) || 0), 0);
+    db.seq = db.seq || {};
+    const seqFix = { cat: maxOf(db.cats), sub: maxOf(db.subs), ent: maxOf(db.entries), plan: maxOf(db.plans), item: 0 };
+    for (const it of (db.plans || [])) seqFix.item = Math.max(seqFix.item, maxOf(it.items || []));
+    for (const k of Object.keys(seqFix)) {
+      const cur = Number(db.seq[k]);
+      db.seq[k] = (!isFinite(cur) || cur <= seqFix[k]) ? seqFix[k] + 1 : cur;
+    }
+
+    // 分类 key 必须安全；重复的补一个后缀，非法字符直接替换
+    const used = new Set();
+    for (const c of db.cats) {
+      let k = normKey(c.key, 'cat' + c.id);
+      while (used.has(k)) k = k + '_' + c.id;
+      used.add(k);
+      c.key = k;
+      c.name = normName(c.name, k);
+      c.color = normColor(c.color);
+      c.kind = c.kind === 'liability' ? 'liability' : 'asset';
+      c.trackPrincipal = c.trackPrincipal ? 1 : 0;
+    }
+
+    // 小类：剔除指向已删分类的孤儿
+    const catIds = new Set(db.cats.map((c) => c.id));
+    db.subs = (db.subs || []).filter((s) => {
+      if (catIds.has(Number(s.categoryId))) return true;
+      console.warn('[资产簿] 剔除孤儿小类：', s.id);
+      return false;
+    });
+    const subIds = new Set(db.subs.map((s) => s.id));
+    db.entries = (db.entries || []).filter((e) => {
+      if (subIds.has(Number(e.subjectId))) return true;
+      console.warn('[资产簿] 剔除孤儿记录：', e.id);
+      return false;
+    });
+    // 月份格式非法的记录归到当月，避免排序与图表出错
+    for (const e of db.entries) {
+      if (!isValidMonth(e.month)) e.month = currentMonth();
+    }
+    for (const s of db.subs) {
+      s.name = normName(s.name, '未命名');
+      s.note = String(s.note == null ? '' : s.note);
+    }
+    for (const p of db.plans) {
+      p.name = normName(p.name, '未命名方案');
+      p.items = Array.isArray(p.items) ? p.items : [];
+      for (const it of p.items) {
+        it.cats = (it.cats || []).filter((k) => used.has(k));
+        it.recIds = (it.recIds || []).map(Number).filter((id) => subIds.has(id));
+        it.ratio = num(it.ratio);
+        it.color = normColor(it.color);
+      }
+    }
+    // 只能有一个「当前方案」
+    let seenCur = false;
+    for (const p of db.plans) {
+      if (p.isCurrent && !seenCur) { seenCur = true; continue; }
+      p.isCurrent = 0;
+    }
+    if (!seenCur && db.plans.length) db.plans[0].isCurrent = 1;
   },
 
   seed() {
@@ -286,7 +399,7 @@ const Api = {
   del: (p) => Promise.reject(new Error('静态版不支持该接口：' + p)),
 
   /* ---- 一级分类 ---- */
-  categories() {
+  async categories() {
     const counts = new Map();
     for (const s of Store.db.subs) counts.set(s.categoryId, (counts.get(s.categoryId) || 0) + 1);
     return Promise.resolve({
@@ -297,8 +410,8 @@ const Api = {
     });
   },
 
-  addCategory(d) {
-    const name = String((d && d.name) || '').trim();
+  async addCategory(d) {
+    const name = normName((d && d.name) || '', '');
     if (!name) return Promise.reject(new Error('请输入分类名称'));
     if (Store.db.cats.some((c) => c.name === name)) return Promise.reject(new Error('已存在同名分类'));
 
@@ -318,10 +431,10 @@ const Api = {
     return Promise.resolve(ok(cat));
   },
 
-  updateCategory(id, d) {
+  async updateCategory(id, d) {
     const c = Store.cat(id);
     if (!c) return Promise.reject(new Error('分类不存在'));
-    const name = String((d && d.name) || '').trim();
+    const name = normName((d && d.name) || '', '');
     if (!name) return Promise.reject(new Error('名称不能为空'));
     if (Store.db.cats.some((x) => x.id !== c.id && x.name === name)) {
       return Promise.reject(new Error('已存在同名分类'));
@@ -339,7 +452,7 @@ const Api = {
     return Promise.resolve(ok());
   },
 
-  deleteCategory(id) {
+  async deleteCategory(id) {
     const c = Store.cat(id);
     if (!c) return Promise.reject(new Error('分类不存在'));
     const removedSubjects = Store.db.subs.filter((s) => s.categoryId === c.id).length;
@@ -353,19 +466,26 @@ const Api = {
       const seed = Store.seed().cats;
       Store.db.cats = seed;
     }
-    // 方案里指向它的关联也要跟着清掉
+    // 方案里指向它的关联也要跟着清掉：分类 key 与被删小类的 id 都要清
     for (const p of Store.db.plans) {
-      for (const it of p.items) it.cats = it.cats.filter((k) => k !== c.key);
+      for (const it of p.items) {
+        it.cats = it.cats.filter((k) => k !== c.key);
+        it.recIds = (it.recIds || []).filter((rid) => !subIds.has(Number(rid)));
+      }
     }
     Store.save();
     return Promise.resolve({ ok: true, removedSubjects });
   },
 
   /* ---- 二级小类 ---- */
-  subjects(q) {
+  async subjects(q) {
     const vals = Store.subValues('9999-12');
     const catKey = q ? String(q).replace(/^category=/, '') : '';
     const cat = catKey && catKey !== 'all' ? Store.catByKey(catKey) : null;
+
+    // 预先统计每个小类的记录数：原来在小类循环里 filter 一遍是 O(n²)，数据多了会卡
+    const cnt = new Map();
+    for (const e of Store.db.entries) cnt.set(e.subjectId, (cnt.get(e.subjectId) || 0) + 1);
 
     const list = Store.db.subs
       .filter((s) => !cat || s.categoryId === cat.id)
@@ -384,20 +504,23 @@ const Api = {
           catName: c ? c.name : '',
           catColor: c ? c.color : '#c8a45c',
           catKind: c ? c.kind : 'asset',
-          entryCount: Store.db.entries.filter((e) => e.subjectId === s.id).length,
+          entryCount: cnt.get(s.id) || 0,
           value: v.value
         };
       });
     return Promise.resolve({ subjects: list });
   },
 
-  addSubject(d) {
-    const name = String((d && d.name) || '').trim();
+  async addSubject(d) {
+    const name = normName((d && d.name) || '', '');
     const cat = Store.cat(d && d.categoryId);
     if (!name) return Promise.reject(new Error('请输入名称'));
     if (!cat) return Promise.reject(new Error('请选择分类'));
 
-    const month = monthOf(d && d.month, currentMonth());
+    // 月份必须严格合法：静默回退到当月会让用户以为记到了别的月份
+    const rawMonth = String((d && d.month) || '').trim();
+    if (!isValidMonth(rawMonth)) return Promise.reject(new Error('月份格式应为 YYYY-MM'));
+    const month = rawMonth;
     const maxOrder = Store.db.subs.reduce((a, s) => Math.max(a, s.sortOrder || 0), 0);
     const now = Date.now();
 
@@ -427,13 +550,13 @@ const Api = {
     return Promise.resolve({ id: sub.id, name, categoryId: cat.id, month });
   },
 
-  updateSubject(id, d) {
+  async updateSubject(id, d) {
     const s = Store.sub(id);
     if (!s) return Promise.reject(new Error('小类不存在'));
     const cat = Store.cat((d && d.categoryId) || s.categoryId);
     if (!cat) return Promise.reject(new Error('分类不存在'));
 
-    const name = String((d && d.name) || '').trim();
+    const name = normName((d && d.name) || '', '');
     if (!name) return Promise.reject(new Error('名称不能为空'));
 
     s.categoryId = cat.id;
@@ -468,7 +591,7 @@ const Api = {
     return Promise.resolve(ok());
   },
 
-  deleteSubject(id) {
+  async deleteSubject(id) {
     const s = Store.sub(id);
     if (!s) return Promise.reject(new Error('小类不存在'));
     const removed = Store.db.entries.filter((e) => e.subjectId === s.id).length;
@@ -482,7 +605,7 @@ const Api = {
   },
 
   /* ---- 变动记录 ---- */
-  entries(q) {
+  async entries(q) {
     const params = {};
     String(q || '').split('&').forEach((kv) => {
       if (!kv) return;
@@ -510,11 +633,11 @@ const Api = {
     });
   },
 
-  addEntry(d) {
+  async addEntry(d) {
     const s = Store.sub(d && d.subjectId);
     if (!s) return Promise.reject(new Error('小类不存在'));
     const month = monthOf(d && d.month, currentMonth());
-    if (!MONTH_RE.test(String((d && d.month) || ''))) return Promise.reject(new Error('月份格式应为 YYYY-MM'));
+    if (!isValidMonth((d && d.month))) return Promise.reject(new Error('月份格式应为 YYYY-MM'));
 
     const now = Date.now();
     const e = {
@@ -531,11 +654,11 @@ const Api = {
     return Promise.resolve({ id: e.id, balance: (Store.subValues('9999-12').get(s.id) || { value: 0 }).value });
   },
 
-  updateEntry(id, d) {
+  async updateEntry(id, d) {
     const e = Store.entry(id);
     if (!e) return Promise.reject(new Error('记录不存在'));
     if (d && d.month !== undefined) {
-      if (!MONTH_RE.test(String(d.month))) return Promise.reject(new Error('月份格式应为 YYYY-MM'));
+      if (!isValidMonth(d.month)) return Promise.reject(new Error('月份格式应为 YYYY-MM'));
       e.month = String(d.month);
     }
     if (d && d.delta !== undefined) e.delta = num(d.delta);
@@ -545,7 +668,7 @@ const Api = {
     return Promise.resolve(ok());
   },
 
-  deleteEntry(id) {
+  async deleteEntry(id) {
     const e = Store.entry(id);
     if (!e) return Promise.reject(new Error('记录不存在'));
     Store.db.entries = Store.db.entries.filter((x) => x.id !== e.id);
@@ -557,7 +680,7 @@ const Api = {
   },
 
   /* ---- 汇总 ---- */
-  overview(n) {
+  async overview(n) {
     const months = recentMonths(Math.min(24, Math.max(1, parseInt(n, 10) || 6)));
     const list = Store.summarize(months);
     const latest = list[list.length - 1];
@@ -578,12 +701,12 @@ const Api = {
     });
   },
 
-  months() {
+  async months() {
     const list = Store.allMonths();
     return Promise.resolve({ list, current: currentMonth(), latest: Store.latestMonth(list) });
   },
 
-  records(month, catKey) {
+  async records(month, catKey) {
     const m = monthOf(month, currentMonth());
     const vals = Store.subValues(m);
 
@@ -637,7 +760,7 @@ const Api = {
     return Promise.resolve({ month: m, groups, total: rows.length });
   },
 
-  composition(month) {
+  async composition(month) {
     const m = monthOf(month, Store.latestMonth());
     const s = Store.summarize([m])[0];
     const all = Store.allMonths();
@@ -663,13 +786,15 @@ const Api = {
     });
   },
 
-  diff(from, to) {
+  async diff(from, to) {
     const f = monthOf(from, currentMonth());
     const t = monthOf(to, currentMonth());
+    // summarize 内部已对月份升序排序，pair[0] 恒为较小月份。
+    // 之前这里用 asc 再取反，导致用户把区间倒着选时「上月/本月」与 from/to 错位，
+    // 页面显示的箭头方向和金额对不上。现在统一按「较小月份 → 较大月份」计算。
     const pair = Store.summarize([f, t]);
-    const asc = String(f) <= String(t);
-    const A = asc ? pair[0] : pair[1];
-    const B = asc ? pair[1] : pair[0];
+    const A = pair[0];
+    const B = pair[1];
 
     const rows = Store.db.cats.map((c) => {
       const prev = A.sums[c.key] || 0;
@@ -684,8 +809,8 @@ const Api = {
 
     const prevNet = A.netWorth, curNet = B.netWorth, netDiff = curNet - prevNet;
     return Promise.resolve({
-      from: asc ? f : t,
-      to: asc ? t : f,
+      from: A.month,
+      to: B.month,
       prevNet,
       curNet,
       netDiff,
@@ -694,7 +819,7 @@ const Api = {
     });
   },
 
-  rank(month) {
+  async rank(month) {
     const list = Store.allMonths();
     const m = monthOf(month, Store.latestMonth(list));
     const s = Store.summarize([m])[0];
@@ -711,7 +836,7 @@ const Api = {
   },
 
   /* ---- 配置方案 ---- */
-  plans() {
+  async plans() {
     const list = Store.db.plans.slice().sort((a, b) => a.sortOrder - b.sortOrder).map((p) => ({
       id: p.id, name: p.name, desc: p.desc, isCurrent: p.isCurrent, builtin: p.builtin,
       items: p.items.slice().sort((a, b) => a.sortOrder - b.sortOrder).map((it) => ({
@@ -723,7 +848,7 @@ const Api = {
     return Promise.resolve({ plans: list, currentId: cur ? cur.id : null });
   },
 
-  addPlan(d) {
+  async addPlan(d) {
     const name = String((d && d.name) || '').trim() || '自定义方案';
     const maxOrder = Store.db.plans.reduce((a, p) => Math.max(a, p.sortOrder || 0), 0);
     const p = {
@@ -749,7 +874,7 @@ const Api = {
     return Promise.resolve({ id: p.id, name: p.name });
   },
 
-  updatePlan(id, d) {
+  async updatePlan(id, d) {
     const p = Store.plan(id);
     if (!p) return Promise.reject(new Error('方案不存在'));
     if (d && d.name !== undefined) {
@@ -774,7 +899,7 @@ const Api = {
     return Promise.resolve(ok());
   },
 
-  deletePlan(id) {
+  async deletePlan(id) {
     const p = Store.plan(id);
     if (!p) return Promise.reject(new Error('方案不存在'));
     Store.db.plans = Store.db.plans.filter((x) => x.id !== p.id);
@@ -790,13 +915,13 @@ const Api = {
     return Promise.resolve(ok());
   },
 
-  setCurrentPlan(id) {
+  async setCurrentPlan(id) {
     for (const p of Store.db.plans) p.isCurrent = p.id === Number(id) ? 1 : 0;
     Store.save();
     return Promise.resolve(ok());
   },
 
-  copyPlan(id) {
+  async copyPlan(id) {
     const p = Store.plan(id);
     if (!p) return Promise.reject(new Error('方案不存在'));
     const maxOrder = Store.db.plans.reduce((a, x) => Math.max(a, x.sortOrder || 0), 0);
@@ -817,7 +942,7 @@ const Api = {
     return Promise.resolve({ id: copy.id, name: copy.name });
   },
 
-  planCompare(month, baseMode, planId) {
+  async planCompare(month, baseMode, planId) {
     const m = monthOf(month, Store.latestMonth());
     const target = (planId && Store.plan(planId)) || Store.db.plans.find((p) => p.isCurrent) || Store.db.plans[0];
     if (!target) return Promise.resolve(null);
@@ -861,7 +986,10 @@ const Api = {
         target: t, actual, gap,
         targetRate: num(it.ratio),
         actualRate: base !== 0 ? (actual / base) * 100 : 0,
-        gapRate: num(it.ratio) !== 0 ? (gap / Math.max(t, 1)) * 100 : 0
+        // 相对偏差统一口径：差额 ÷ 目标额（目标为 0 时无意义，给 0）。
+        // 之前这里用 Math.max(t, 1) 当分母，目标额很小的时候会算出离谱的百分比，
+        // 而提示语又按「差额 ÷ 目标」算，两边对不上。
+        gapRate: t !== 0 ? (gap / Math.abs(t)) * 100 : 0
       };
     });
 
@@ -881,7 +1009,7 @@ const Api = {
   },
 
   /* ---- 偏好设置 ---- */
-  settings() {
+  async settings() {
     const st = Store.db.settings;
     return Promise.resolve({
       fontScale: num(st.fontScale) || 1,
@@ -890,10 +1018,15 @@ const Api = {
     });
   },
 
-  saveSettings(d) {
+  async saveSettings(d) {
     if (!d) return Promise.resolve(ok());
     if (d.fontScale !== undefined) Store.db.settings.fontScale = num(d.fontScale) || 1;
-    if (d.headerBg !== undefined) Store.db.settings.headerBg = String(d.headerBg || '');
+    if (d.headerBg !== undefined) {
+      // 只接受本地生成的 data:image，挡掉 javascript: 之类
+      const bg = normHeaderBg(d.headerBg);
+      if (d.headerBg && !bg) return Promise.reject(new Error('背景图格式不支持，请重新选择图片'));
+      Store.db.settings.headerBg = bg;
+    }
     Store.save();
     return Promise.resolve(ok());
   },
@@ -937,7 +1070,13 @@ const Api = {
   backupCSV() {
     const rows = Store.db.entries.slice()
       .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : a.createdAt - b.createdAt));
-    const esc = (v) => '"' + String(v === undefined || v === null ? '' : v).replace(/"/g, '""') + '"';
+    // CSV 公式注入防护：以 = + - @ 开头的单元格会被 Excel 当成公式执行，
+    // 名称/备注都是用户输入，统一加前导单引号中和掉。
+    const esc = (v) => {
+      let s = String(v === undefined || v === null ? '' : v);
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+      return '"' + s.replace(/"/g, '""') + '"';
+    };
     const lines = ['月份,一级分类,二级小类,当月变动,备注'];
     for (const e of rows) {
       const s = Store.sub(e.subjectId);
@@ -948,21 +1087,42 @@ const Api = {
     return '\uFEFF' + lines.join('\r\n');
   },
 
-  importJSON(data) {
-    if (!data || typeof data !== 'object') return Promise.reject(new Error('文件内容不是有效的 JSON 对象'));
-    if (data.type !== 'assetbook-backup') return Promise.reject(new Error('这不是资产簿的备份文件（缺少标识 type=assetbook-backup）'));
+  /**
+   * 导入备份。
+   * 备份文件是外部输入，等同于不可信数据：这里逐项校验后再落库。
+   * 关键点：
+   *  1. 分类 key 必须匹配安全字符集（会被拼进 HTML 属性与内联事件）；
+   *  2. 名称/备注限长，避免撑爆 localStorage 或破坏渲染；
+   *  3. 月份必须是合法 YYYY-MM，非法记录直接丢弃而不是落到当月；
+   *  4. 方案里的 cats/recIds 必须指向真实存在的分类与小类。
+   */
+  async importJSON(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      return Promise.reject(new Error('文件内容不是有效的 JSON 对象'));
+    }
+    if (data.type !== 'assetbook-backup') {
+      return Promise.reject(new Error('这不是资产簿的备份文件（缺少标识 type=assetbook-backup）'));
+    }
     const hasNew = Array.isArray(data.subjects) || Array.isArray(data.entries);
     if (!hasNew) return Promise.reject(new Error('备份内容不完整：缺少 subjects/entries'));
 
+    const problems = [];
+    const warn = (m) => { if (problems.length < 8) problems.push(m); };
+
     // ① 分类：按 key 补齐缺失的，已有的不覆盖（名字可能被用户改过）
     if (Array.isArray(data.categories)) {
+      const used = new Set(Store.db.cats.map((c) => c.key));
       for (const c of data.categories) {
-        if (!c || !c.key) continue;
-        if (Store.catByKey(c.key)) continue;
+        if (!c || typeof c !== 'object') continue;
+        const rawKey = String(c.key == null ? '' : c.key).trim();
+        if (!rawKey) { warn('有分类缺少 key，已跳过'); continue; }
+        if (!KEY_RE.test(rawKey)) { warn('分类 key「' + rawKey.slice(0, 12) + '」含非法字符，已跳过'); continue; }
+        if (used.has(rawKey) || Store.catByKey(rawKey)) continue;
+        used.add(rawKey);
         Store.db.cats.push({
           id: Store.nextId('cat'),
-          key: c.key,
-          name: String(c.name || c.key),
+          key: rawKey,
+          name: normName(c.name, rawKey),
           color: normColor(c.color),
           kind: c.kind === 'liability' ? 'liability' : 'asset',
           trackPrincipal: c.trackPrincipal ? 1 : 0,
@@ -975,86 +1135,139 @@ const Api = {
     const idMap = new Map();
     const newSubs = [];
     for (const s of (data.subjects || [])) {
-      if (!s || s.name === undefined) continue;
-      const cat = Store.catByKey(String(s.category || 'cash')) || Store.db.cats[0];
+      if (!s || typeof s !== 'object' || s.name === undefined) continue;
+      const catKey = String(s.category || 'cash').trim();
+      const cat = Store.catByKey(catKey) || Store.db.cats[0];
       if (!cat) continue;
+      const name = normName(s.name, '');
+      if (!name) { warn('有小类没有名称，已跳过'); continue; }
       const sid = Store.nextId('sub');
       if (s._id !== undefined) idMap.set(String(s._id), sid);
       newSubs.push({
         id: sid,
         categoryId: cat.id,
-        name: String(s.name),
+        name,
         principal: cat.trackPrincipal ? num(s.principal) : 0,
-        note: String(s.note || ''),
+        note: normName(s.note, ''),
         sortOrder: newSubs.length,
         createdAt: Number(s.createdAt) || Date.now()
       });
     }
 
     const newEntries = [];
+    let droppedEntries = 0;
     for (const e of (data.entries || [])) {
-      if (!e) continue;
+      if (!e || typeof e !== 'object') continue;
       const sid = idMap.get(String(e.subjectId));
-      if (sid === undefined) continue;
+      if (sid === undefined) { droppedEntries++; continue; }
+      const m = String(e.month == null ? '' : e.month).trim();
+      if (!isValidMonth(m)) { droppedEntries++; continue; }
       newEntries.push({
         id: Store.nextId('ent'),
         subjectId: sid,
-        month: String(e.month || currentMonth()),
+        month: m,
         delta: num(e.delta),
-        note: String(e.note || ''),
+        note: normName(e.note, ''),
         createdAt: Number(e.createdAt) || Date.now(),
         updatedAt: Date.now()
       });
     }
+    if (droppedEntries) warn(`${droppedEntries} 条记录因月份格式非法或找不到对应小类被跳过`);
 
     Store.db.subs = newSubs;
     Store.db.entries = newEntries;
 
     // ③ 方案：文件里带就整体覆盖，小类 id 用新映射
     if (Array.isArray(data.plans) && data.plans.length) {
-      Store.db.plans = data.plans.map((p, i) => ({
+      const catKeys = new Set(Store.db.cats.map((c) => c.key));
+      const subIds = new Set(newSubs.map((s) => s.id));
+      Store.db.plans = data.plans.filter((p) => p && typeof p === 'object').map((p, i) => ({
         id: Store.nextId('plan'),
-        name: String(p.name || ('方案 ' + (i + 1))),
-        desc: String(p.desc || ''),
+        name: normName(p.name, '方案 ' + (i + 1)),
+        desc: normName(p.desc, ''),
         isCurrent: 0,
-        builtin: String(p.builtin || ''),
+        builtin: normName(p.builtin, ''),
         sortOrder: i,
-        items: (p.items || []).map((it, j) => ({
-          id: Store.nextId('item'),
-          name: String(it.name || ('配置项 ' + (j + 1))),
-          ratio: num(it.ratio),
-          color: normColor(it.color),
-          note: String(it.note || ''),
-          sortOrder: j,
-          cats: (it.cats || []).slice(),
-          recIds: (it.recIds || []).map((r) => Number(idMap.get(String(r)))).filter((r) => !isNaN(r))
-        }))
+        items: (Array.isArray(p.items) ? p.items : [])
+          .filter((it) => it && typeof it === 'object')
+          .map((it, j) => ({
+            id: Store.nextId('item'),
+            name: normName(it.name, '配置项 ' + (j + 1)),
+            ratio: num(it.ratio),
+            color: normColor(it.color),
+            note: normName(it.note, ''),
+            sortOrder: j,
+            cats: (Array.isArray(it.cats) ? it.cats : []).map(String).filter((k) => catKeys.has(k)),
+            recIds: (Array.isArray(it.recIds) ? it.recIds : [])
+              .map((r) => Number(idMap.get(String(r))))
+              .filter((r) => isFinite(r) && subIds.has(r))
+          }))
       }));
-      const curId = Number(data.planCurrentId);
-      const cur = Store.db.plans.find((p) => p.id === idMap.get(String(data.planCurrentId)))
-        || (curId && Store.db.plans[0]) || Store.db.plans[0];
+      // 当前方案：按 _id 映射找对应，找不到就退回第一个
+      const cur = Store.db.plans.find((p) => p.id === idMap.get(String(data.planCurrentId))) || Store.db.plans[0];
       if (cur) cur.isCurrent = 1;
     }
 
-    if (data.headerBg !== undefined) Store.db.settings.headerBg = String(data.headerBg || '');
+    if (data.headerBg !== undefined) Store.db.settings.headerBg = normHeaderBg(data.headerBg);
     if (data.fontScale !== undefined) Store.db.settings.fontScale = num(data.fontScale) || 1;
 
     Store.save();
-    return Promise.resolve({ ok: true, subjects: newSubs.length, entries: newEntries.length });
+    return Promise.resolve({
+      ok: true,
+      subjects: newSubs.length,
+      entries: newEntries.length,
+      warnings: problems
+    });
   },
 
-  clearData(scope) {
+  /**
+   * 清空数据。
+   * 语义要清楚：
+   *  assets     → 清空小类与全部变动记录
+   *  categories → 只把「自定义分类」恢复成默认六类，保留小类与记录（归属改到默认分类）
+   *  plans      → 恢复默认方案
+   *  bg         → 清除背景图
+   * 之前 categories 分支会把小类和记录一起删掉，用户只想重置分类却丢了账。
+   */
+  async clearData(scope) {
     const s = scope || { assets: true };
     if (s.assets) {
       Store.db.entries = [];
       Store.db.subs = [];
+      // 小类都没了，方案里指向小类的关联也要清
+      for (const p of Store.db.plans) {
+        for (const it of p.items) it.recIds = [];
+      }
     }
     if (s.categories) {
-      // 分类删光就补回默认六个，否则界面会出现「无处可记」的空态
-      const subIds = new Set(Store.db.subs.map((x) => x.id));
-      Store.db.entries = Store.db.entries.filter((e) => !subIds.has(e.subjectId));
-      Store.db.subs = [];
-      Store.db.cats = Store.seed().cats.map((c) => ({ ...c, id: Store.nextId('cat') }));
+      // 只删除自定义分类（key 不在默认集合里的），默认六类始终保留
+      const defaultKeys = new Set(DEFAULT_CATEGORIES.map((c) => c.key));
+      const removedKeys = new Set();
+      for (const c of Store.db.cats.slice()) {
+        if (defaultKeys.has(c.key)) continue;
+        removedKeys.add(c.key);
+        Store.db.cats = Store.db.cats.filter((x) => x.id !== c.id);
+      }
+      // 归属到被删分类的小类，挂到「现金」分类下，记录一条不丢
+      const fallback = Store.catByKey('cash') || Store.db.cats[0];
+      if (fallback) {
+        for (const sub of Store.db.subs) {
+          const c = Store.cat(sub.categoryId);
+          if (!c || removedKeys.has(c.key)) sub.categoryId = fallback.id;
+        }
+      }
+      for (const p of Store.db.plans) {
+        for (const it of p.items) it.cats = it.cats.filter((k) => !removedKeys.has(k));
+      }
+      // 默认六类可能被此前的操作删过，这里补齐
+      for (const def of DEFAULT_CATEGORIES) {
+        if (Store.catByKey(def.key)) continue;
+        Store.db.cats.push({
+          id: Store.nextId('cat'), key: def.key, name: def.name, color: def.color,
+          kind: def.kind, trackPrincipal: def.trackPrincipal,
+          sortOrder: Store.db.cats.reduce((a, x) => Math.max(a, x.sortOrder || 0), 0) + 1
+        });
+      }
     }
     if (s.plans) {
       Store.db.plans = [{
@@ -1066,8 +1279,7 @@ const Api = {
     Store.save();
     return Promise.resolve(ok());
   },
-
-  restoreDemo() {
+  async restoreDemo() {
     const months = recentMonths(6);
     const m0 = months[0];
 
@@ -1132,21 +1344,29 @@ const Api = {
    写操作再整体落盘，省掉每次读 JSON.parse 的开销 */
 Store.load();
 
+/**
+ * 净值分位：percentile 表示「你超过了百分之多少的人群」。
+ * label 是你在人群中的位置（前十、前五…），两者必须口径一致：
+ *   percentile=90.3 → 超过了 90.3% 的人 → 处于前 9.7%
+ *   percentile=20   → 超过了 20% 的人 → 处于后 80%
+ * 之前 label 用的是「后 20%」，和 percentile 直接换算，看着像前后矛盾。
+ */
 function calcPercentile(v) {
   const b = NETWORTH_BENCHMARK;
-  if (v <= 0) return { percentile: 0, label: '后 1%' };
+  if (v <= 0) return { percentile: 0, label: '后 100%' };
   if (v >= b[b.length - 1].v) return { percentile: 99, label: '前 1%' };
   for (let i = 0; i < b.length - 1; i++) {
     if (v >= b[i].v && v <= b[i + 1].v) {
-      const t = (v - b[i].v) / (b[i + 1].v - b[i].v);
+      const t = (b[i + 1].v - b[i].v) === 0 ? 0 : (v - b[i].v) / (b[i + 1].v - b[i].v);
       const pct = b[i].p + (b[i + 1].p - b[i].p) * t;
+      const pos = 100 - pct;
       return {
         percentile: Math.round(pct * 10) / 10,
-        label: pct >= 50 ? '前 ' + (100 - pct).toFixed(1) + '%' : '后 ' + pct.toFixed(1) + '%'
+        label: pos >= 50 ? '后 ' + pos.toFixed(1) + '%' : '前 ' + pos.toFixed(1) + '%'
       };
     }
   }
-  return { percentile: 50, label: '后 50%' };
+  return { percentile: 50, label: '后 50.0%' };
 }
 
 function buildPlanTips(rows, ratioSum) {
@@ -1158,7 +1378,8 @@ function buildPlanTips(rows, ratioSum) {
     });
   }
   rows.forEach((r) => {
-    const gapRate = r.targetRate !== 0 ? ((r.actual - r.target) / Math.abs(r.target)) * 100 : 0;
+    // 与行内的 gapRate 用同一口径（差额 ÷ 目标额），避免提示语和行内状态打架
+    const gapRate = Number(r.gapRate) || 0;
     if (r.targetRate === 0 && r.actual === 0) return;
     if (Math.abs(gapRate) < 20) return;
     const over = gapRate > 0;

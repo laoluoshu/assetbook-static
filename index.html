@@ -4,8 +4,14 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
 <meta name="theme-color" content="#f4ecdf" />
+<!--
+  静态版不联网：connect-src 'none' 从浏览器层面杜绝任何数据外发，
+  即使页面里混进了恶意代码也没法把本机账本传出去。
+  script-src 需要 unsafe-inline，因为界面上大量用 onclick 之类的内联事件。
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'" />
 <title>资产簿 · 个人资产手账（单机版）</title>
-<link rel="stylesheet" href="./css/style.css?v=202610181130" />
+<link rel="stylesheet" href="./css/style.css?v=202610231313" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏡</text></svg>" />
 </head>
 <body>
@@ -546,9 +552,9 @@
 <div class="loading" id="loading"><div class="spinner"></div></div>
 <input type="file" id="hiddenFile" style="display:none" />
 
-<script src="./js/api.js?v=202610181130"></script>
-<script src="./js/charts.js?v=202610181130"></script>
-<script src="./js/ui.js?v=202610181130"></script>
-<script src="./js/app.js?v=202610181130"></script>
+<script src="./js/api.js?v=202610231313"></script>
+<script src="./js/charts.js?v=202610231313"></script>
+<script src="./js/ui.js?v=202610231313"></script>
+<script src="./js/app.js?v=202610231313"></script>
 </body>
 </html>

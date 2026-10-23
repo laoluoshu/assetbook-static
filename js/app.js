@@ -185,7 +185,7 @@ const App = {
   buildRecTabs() {
     const el = document.getElementById('recTabs');
     el.innerHTML = `<div class="tab ${S.recCat === 'all' ? 'active' : ''}" onclick="App.setRecCat('all')">全部</div>` +
-      S.cats.map((c) => `<div class="tab ${S.recCat === c.key ? 'active' : ''}" onclick="App.setRecCat('${c.key}')">${Fmt.esc(c.name)}</div>`).join('');
+      S.cats.map((c) => `<div class="tab ${S.recCat === c.key ? 'active' : ''}" onclick="App.setRecCat('${Fmt.jsStr(c.key)}')">${Fmt.esc(c.name)}</div>`).join('');
   },
 
   setRecCat(k) { S.recCat = k; this.buildRecTabs(); this.renderRecords(); },
@@ -227,7 +227,7 @@ const App = {
           <div class="amt ${i.value < 0 ? 'neg' : ''}">${Fmt.money(i.value)}</div>
           <div class="ops">
             <button onclick="event.stopPropagation();App.openForm(${i.id})">编辑</button>
-            <button onclick="event.stopPropagation();App.delSubject(${i.id},'${Fmt.esc(i.name)}')">删除</button>
+            <button onclick="event.stopPropagation();App.delSubject(${i.id})">删除</button>
           </div>
         </div>`;
       }).join('');
@@ -249,7 +249,7 @@ const App = {
 
     // 表单里的分类选择器
     document.getElementById('catSeg').innerHTML = S.cats.map((c) =>
-      `<div class="opt" data-k="${c.key}" onclick="App.setFormCat('${c.key}')">${Fmt.esc(c.name)}</div>`).join('');
+      `<div class="opt" data-k="${c.key}" onclick="App.setFormCat('${Fmt.jsStr(c.key)}')">${Fmt.esc(c.name)}</div>`).join('');
 
     if (id) {
       // 编辑：从当前列表缓存里取回该小类，省一次请求
@@ -333,7 +333,10 @@ const App = {
     } catch (e) { toast(e.message, 'err'); }
   },
 
-  async delSubject(id, name) {
+  /** 删除小类：只传 id，名称从当前列表缓存里查，避免把用户输入拼进 HTML 属性 */
+  async delSubject(id) {
+    const item = (this._recIndex || {})[id];
+    const name = item ? item.name : '该小类';
     const ok = await Dlg.confirm(`确定删除「${name}」吗？\n其名下的全部变动记录会一并删除，且无法恢复。`, { okText: '删除' });
     if (!ok) return;
     try { await Api.deleteSubject(id); toast('已删除', 'ok'); this.afterDataChange(); }
@@ -660,11 +663,16 @@ const App = {
     return { label: '略高', cls: 'over' };
   },
 
+  /**
+   * 切换「正在查看」的方案。
+   * 注意：这里不应该顺手把当前方案也改掉——「当前方案」是全局配置，
+   * 只有一个明确的「启用」动作才应该改它。以前点一下标签页就把全局当前方案改了，
+   * 用户在方案管理里看到的「当前」标记会莫名其妙地跳。
+   */
   setPlan(id) {
     S.planId = id;
     document.querySelectorAll('#planTabs .tab').forEach((t) => t.classList.remove('active'));
     this.renderPlan();
-    Api.setCurrentPlan(id).catch(() => {});
   },
 
   onPlanMonth(v) { S.planMonth = v; this.renderPlan(); },
@@ -800,8 +808,8 @@ const App = {
         ${c.trackPrincipal ? '<span class="m-cur">记本金</span>' : ''}
         <span class="m-extra">${c.subjectCount} 项</span>
         <span class="m-ops">
-          <button onclick="App.openCatEditor('${c.key}')">编辑</button>
-          <button onclick="App.delCat('${c.key}','${Fmt.esc(c.name)}',${c.subjectCount})">删除</button>
+          <button onclick="App.openCatEditor('${Fmt.jsStr(c.key)}')">编辑</button>
+          <button onclick="App.delCat(${c.id})">删除</button>
         </span>
       </div>`).join('');
   },
@@ -822,7 +830,7 @@ const App = {
 
     const palette = ['#9d4238', '#b5654d', '#c8a45c', '#7a8450', '#5f7161', '#8a6f5c', '#a98467', '#c97b63', '#d4a373', '#6b705c', '#ad6a4c', '#7f4f37'];
     document.getElementById('catColorQuick').innerHTML = palette.map((p) =>
-      `<span style="background:${p}" onclick="App.onCatColor('${p}')"></span>`).join('');
+      `<span style="background:${p}" onclick="App.onCatColor('${Fmt.jsStr(p)}')"></span>`).join('');
 
     document.getElementById('catEditor').style.display = 'block';
   },
@@ -860,14 +868,16 @@ const App = {
     } catch (e) { document.getElementById('catErr').textContent = e.message; }
   },
 
-  async delCat(key, name, count) {
-    const msg = count > 0
-      ? `「${name}」下还有 ${count} 个小类，删除分类会一并删除这些小类及其全部变动记录，且无法恢复。确定删除吗？`
-      : `确定删除分类「${name}」吗？`;
+  /** 删除分类：只传 id，名称与数量从 S.cats 里查 */
+  async delCat(id) {
+    const c = S.cats.find((x) => x.id === id);
+    if (!c) { toast('分类不存在', 'err'); return; }
+    const msg = c.subjectCount > 0
+      ? `「${c.name}」下还有 ${c.subjectCount} 个小类，删除分类会一并删除这些小类及其全部变动记录，且无法恢复。确定删除吗？`
+      : `确定删除分类「${c.name}」吗？`;
     const ok = await Dlg.confirm(msg, { okText: '删除' });
     if (!ok) return;
     try {
-      const c = S.cats.find((x) => x.key === key);
       await Api.deleteCategory(c.id);
       await this.renderCatList();
       this.buildRecTabs();
@@ -893,7 +903,7 @@ const App = {
           ${p.id !== d.currentId ? `<button onclick="App.usePlan(${p.id})">启用</button>` : ''}
           <button onclick="App.copyPlan(${p.id})">复制</button>
           <button onclick="App.openPlanEditor(${p.id})">编辑</button>
-          <button onclick="App.delPlan(${p.id},'${Fmt.esc(p.name)}')">删除</button>
+          <button onclick="App.delPlan(${p.id})">删除</button>
         </span>
       </div>`;
     }).join('');
@@ -912,9 +922,11 @@ const App = {
     } catch (e) { toast(e.message, 'err'); }
   },
 
-  async delPlan(id, name) {
+  async delPlan(id) {
     // 后端也会拦，但前端先拦一次能给更清楚的提示，不必等一次往返
     if (S.plans.length <= 1) { toast('至少需要保留一个方案', 'err'); return; }
+    const p = S.plans.find((x) => x.id === id);
+    const name = p ? p.name : '该方案';
     const ok = await Dlg.confirm(`确定删除方案「${name}」吗？`, { okText: '删除' });
     if (!ok) return;
     try { await Api.deletePlan(id); this._plansDirty = true; await this.renderPlanMgrList(); toast('已删除', 'ok'); }
@@ -956,7 +968,7 @@ const App = {
     document.getElementById('planItems').innerHTML = S.planDraft.items.map((it, i) => {
       const catTags = S.cats.map((c) => {
         const on = it.cats.includes(c.key);
-        return `<span class="tab" style="${on ? 'background:var(--brand);color:#fdf8ef;border-color:var(--brand)' : ''}" onclick="App.togglePlanCat(${i},'${c.key}')">${Fmt.esc(c.name)}</span>`;
+        return `<span class="tab" style="${on ? 'background:var(--brand);color:#fdf8ef;border-color:var(--brand)' : ''}" onclick="App.togglePlanCat(${i},'${Fmt.jsStr(c.key)}')">${Fmt.esc(c.name)}</span>`;
       }).join('');
 
       const open = S.planDraft.openRec === i;
@@ -1406,5 +1418,23 @@ function startApp() {
     toast('初始化失败：' + (e.message || '未知错误'), 'err', 4000);
   });
 }
+
+/**
+ * 多标签页同步：同一个浏览器开了两个标签时，另一个标签改了数据，
+ * 这边不刷新就会看到过期数字（甚至把旧数据写回去覆盖新数据）。
+ * 监听 storage 事件，重新载入内存副本并重绘当前页。
+ */
+window.addEventListener('storage', (e) => {
+  if (!e.key || e.key !== 'assetbook_static_v1') return;
+  try {
+    Store.load();
+    App.loadBaseData().then(() => {
+      App.syncMonthInputs();
+      App.refresh();
+      toast('已同步其他标签页的改动', 'ok');
+    }).catch(() => {});
+  } catch (e) { /* 同步失败忽略 */ }
+});
+
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startApp);
 else startApp();
